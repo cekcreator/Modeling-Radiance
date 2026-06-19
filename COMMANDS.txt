@@ -1,0 +1,173 @@
+==============================================================
+  MODELING RADIANCE — HELPFUL COMMANDS
+==============================================================
+
+--------------------------------------------------------------
+  ENVIRONMENT SETUP
+--------------------------------------------------------------
+
+# Production package (Poetry)
+poetry install
+
+# Research notebooks (conda)
+conda create --name mr_env --file research/notebooks/requirements.txt
+conda activate mr_env
+
+# Activate the Poetry venv directly (used for all prod commands below)
+source .venv/bin/activate
+
+
+--------------------------------------------------------------
+  COEFFICIENT GENERATION (MODTRAN 3.7)
+--------------------------------------------------------------
+
+python -c "
+from prod.std.standard_method import run
+run(
+    data_dir='data/Modtran_3-7_data/',
+    srf_dir='data/SRF/',
+    srf_version='0-0-1',
+    modtran_version='3.7',
+)
+"
+
+# Output: coefficients/unfiltering_coefficients_v*.nc
+
+
+--------------------------------------------------------------
+  COEFFICIENT GENERATION (MODTRAN 6 — when S3 path available)
+--------------------------------------------------------------
+
+python -c "
+from prod.std.standard_method import run
+run(
+    data_dir='s3://BUCKET/PREFIX/',
+    srf_dir='data/SRF/',
+    srf_version='0-0-1',
+    modtran_version='6.0',
+)
+"
+
+
+--------------------------------------------------------------
+  RUN THE ALGORITHM (end-to-end)
+--------------------------------------------------------------
+
+export PROCESSING_PATH=/tmp/libera_test_output
+mkdir -p $PROCESSING_PATH
+
+.venv/bin/python unfiltered_radiances/algorithm.py \
+  data/manifest/LIBERA_INPUT_MANIFEST_01KTYJTXF3093TXA6V3M28CTNT.json
+
+
+--------------------------------------------------------------
+  INSPECT ALGORITHM OUTPUT
+--------------------------------------------------------------
+
+python -c "
+import xarray as xr, glob, numpy as np
+f = sorted(glob.glob('/tmp/libera_test_output/*.nc'))[-1]
+print('Output:', f)
+ds = xr.open_dataset(f)
+for v in ['shortwave_unfiltered_radiance', 'longwave_unfiltered_radiance',
+          'split_shortwave_unfiltered_radiance', 'total_unfiltered_radiance']:
+    a = ds[v].values
+    print(f'{v}: min={np.nanmin(a):.4f}  max={np.nanmax(a):.4f}  nans={np.isnan(a).sum()}')
+ds.close()
+"
+
+
+--------------------------------------------------------------
+  INSPECT COEFFICIENT FILE
+--------------------------------------------------------------
+
+python -c "
+import xarray as xr
+ds = xr.open_dataset('coefficients/unfiltering_coefficients_v0.1.0_srf-0-0-1_modtran-3.7.nc')
+print(ds)
+print(ds.attrs)
+ds.close()
+"
+
+
+--------------------------------------------------------------
+  INSPECT L1B FILE
+--------------------------------------------------------------
+
+python -c "
+import xarray as xr
+ds = xr.open_dataset('data/example_data/LIBERA_L1B_RAD-4CH_V0-5-5_20280212T033945_20280212T052007_R26154153835.nc')
+print(ds)
+ds.close()
+"
+
+
+--------------------------------------------------------------
+  INSPECT MODTRAN 6 EXAMPLE FILE
+--------------------------------------------------------------
+
+python -c "
+import xarray as xr
+ds = xr.open_dataset('data/Modtran_6_data/FV3_Modtran6_IO_v5_write_v2_scene_1.nc')
+print(ds)
+ds.close()
+"
+
+
+--------------------------------------------------------------
+  TESTS
+--------------------------------------------------------------
+
+# All tests
+.venv/bin/python -m pytest tests/ -v
+
+# Unit tests only
+.venv/bin/python -m pytest tests/unit/ -v
+
+# Integration tests only
+.venv/bin/python -m pytest tests/integration/ -v
+
+# Single test file
+.venv/bin/python -m pytest tests/unit/test_modtran6.py -v
+.venv/bin/python -m pytest tests/unit/test_tp7.py -v
+.venv/bin/python -m pytest tests/unit/test_standard_method.py -v
+.venv/bin/python -m pytest tests/integration/test_tape7_integration.py -v
+.venv/bin/python -m pytest tests/integration/test_load_dataset.py -v
+
+
+--------------------------------------------------------------
+  QUICK MODTRAN 6 PARSER CHECK
+--------------------------------------------------------------
+
+python -c "
+from tp7.modtran6 import load_nc_dataset
+df = load_nc_dataset('data/Modtran_6_data/')
+print(df.shape)
+print(df.columns.tolist())
+print(df.head())
+"
+
+
+--------------------------------------------------------------
+  QUICK TAPE7 PARSER CHECK (MODTRAN 3.7)
+--------------------------------------------------------------
+
+python -c "
+import glob
+from tp7.tp7 import Tape7
+files = sorted(glob.glob('data/Modtran_3-7_data/**/oceclr_*.tp7', recursive=True))
+t = Tape7(files[0])
+print(t.describer_df.head())
+print(t.describer_df.describe())
+"
+
+
+--------------------------------------------------------------
+  NOTES
+--------------------------------------------------------------
+- Coefficient files are in coefficients/ and named:
+    unfiltering_coefficients_v{semver}_srf-{srf_ver}_modtran-{m_ver}.nc
+- All prod commands use .venv (Poetry), NOT conda mr_env
+- conda mr_env is only for research/notebooks/
+- PROCESSING_PATH env var must be set before running algorithm.py
+- COEFFICIENTS_FILE env var overrides the default coefficient file lookup
