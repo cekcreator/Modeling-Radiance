@@ -18,7 +18,7 @@ attributes:
 coordinates:
   radiometer_time:
     dtype: datetime64[ns]
-    dimensions: ["radiometer_time"]
+    dimensions: ["RADIOMETER_TIME"]
     attributes:
       long_name: >-
         Time of each measurement (UTC) against a base reference of the CCSDS Epoch (January 1, 1958).
@@ -31,7 +31,7 @@ coordinates:
 variables:
   shortwave_unfiltered_radiance:
     long_name: "Shortwave Unfiltered radiance measurements"
-    dimensions: ["radiometer_time"]
+    dimensions: ["RADIOMETER_TIME"]
     units: "W/(m^2*sr*nm)"  # Watts per square meter per steradian per nanometer
     valid_range: [0, 1000]  
     missing_value: -9999.0
@@ -39,7 +39,7 @@ variables:
 
   longwave_unfiltered_radiance:
     long_name: "Longwave Unfiltered radiance measurements"
-    dimensions: ["radiometer_time"]
+    dimensions: ["RADIOMETER_TIME"]
     units: "W/(m^2*sr*nm)"  # Watts per square meter per steradian per nanometer
     valid_range: [0, 1000]  
     missing_value: -9999.0
@@ -47,7 +47,7 @@ variables:
 
   split_shortwave_unfiltered_radiance:
     long_name: "SplitShortwave Unfiltered radiance measurements"
-    dimensions: ["radiometer_time"]
+    dimensions: ["RADIOMETER_TIME"]
     units: "W/(m^2*sr*nm)"  # Watts per square meter per steradian per nanometer
     valid_range: [0, 1000]  
     missing_value: -9999.0
@@ -55,7 +55,7 @@ variables:
 
   total_unfiltered_radiance:
     long_name: "Total Unfiltered radiance measurements"
-    dimensions: ["radiometer_time"]
+    dimensions: ["RADIOMETER_TIME"]
     units: "W/(m^2*sr*nm)"  # Watts per square meter per steradian per nanometer
     valid_range: [0, 1000]  
     missing_value: -9999.0
@@ -63,7 +63,7 @@ variables:
 
   latitude:
     long_name: "Geodetic latitude"
-    dimensions: ["radiometer_time"]
+    dimensions: ["RADIOMETER_TIME"]
     units: "degrees_north"
     valid_range: [-90, 90]
     missing_value: -999.0
@@ -71,7 +71,7 @@ variables:
 
   longitude:
     long_name: "Geodetic longitude"
-    dimensions: ["radiometer_time"]
+    dimensions: ["RADIOMETER_TIME"]
     units: "degrees_east"
     valid_range: [-180, 180]
     missing_value: -999.0
@@ -79,7 +79,7 @@ variables:
 
   quality_flags:
     long_name: "Data quality flags"
-    dimensions: ["radiometer_time"]
+    dimensions: ["RADIOMETER_TIME"]
     units: "1"  # Dimensionless
     valid_range: [0, 255]  # 8-bit flags: 0=good, 1=questionable, 2=bad, etc.
     missing_value: -1

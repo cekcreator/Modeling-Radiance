@@ -1,0 +1,210 @@
+==============================================================
+  MODELING RADIANCE — HELPFUL COMMANDS
+==============================================================
+
+--------------------------------------------------------------
+  ENVIRONMENT SETUP
+--------------------------------------------------------------
+
+# Production package (Poetry)
+poetry install
+
+# Research notebooks (conda)
+conda create --name mr_env --file research/notebooks/requirements.txt
+conda activate mr_env
+
+# Activate the Poetry venv directly (used for all prod commands below)
+source .venv/bin/activate
+
+
+--------------------------------------------------------------
+  FULL PIPELINE (end-to-end)
+--------------------------------------------------------------
+
+# Step 1 — Generate regression coefficients from MODTRAN 3.7 data
+#   Output: coefficients/unfiltering_coefficients_v*.nc
+python -c "
+from prod.std.standard_method import run
+run(
+    data_dir='data/Modtran_3-7_data/',
+    srf_dir='data/SRF/',
+    srf_version='0-0-1',
+    modtran_version='3.7',
+)
+"
+
+# Step 2 — Run the L2 unfiltering algorithm
+#   Reads:  L1B and FMATCH-CAM files listed in the manifest
+#   Writes: LIBERA_L2_UNF-RAD_*.nc  and  LIBERA_OUTPUT_MANIFEST_*.json
+#           into $PROCESSING_PATH
+export PROCESSING_PATH=/tmp/libera_output
+mkdir -p $PROCESSING_PATH
+
+.venv/bin/python unfiltered_radiances/algorithm.py data/manifest/LIBERA_INPUT_MANIFEST_01KVRA2GC8R3NGRTE5J8X2P8PE.json
+
+# Step 3 — Inspect the output
+python -c "
+import xarray as xr, glob, numpy as np
+f = sorted(glob.glob('/tmp/libera_output/LIBERA_L2_*.nc'))[-1]
+print('Output file:', f)
+ds = xr.open_dataset(f)
+print(ds)
+for v in ['shortwave_unfiltered_radiance', 'longwave_unfiltered_radiance',
+          'split_shortwave_unfiltered_radiance', 'total_unfiltered_radiance']:
+    a = ds[v].values
+    print(f'{v}:  filled={np.isfinite(a).sum()}  nan={np.isnan(a).sum()}')
+ds.close()
+"
+
+
+--------------------------------------------------------------
+  GENERATE THE TWO-FILE MANIFEST (one-time setup)
+--------------------------------------------------------------
+
+# Run this if you need to recreate the manifest that includes both
+# the L1B and FMATCH-CAM example files.
+python -c "
+from pathlib import Path
+from libera_utils.io.manifest import Manifest, ManifestType
+
+repo = Path('.').resolve()
+filenames = [
+    str(repo / 'data/example_data/LIBERA_L1B_RAD-4CH_V0-5-5_20280212T033945_20280212T052007_R26154153835.nc'),
+    str(repo / 'data/example_data/LIBERA_ANC_FMATCH-CAM_V0-1-0_20280212T033945_20280212T033954_R26169165032.nc'),
+]
+manifest = Manifest(manifest_type=ManifestType.INPUT, files=filenames)
+out = manifest.write(str(repo / 'data/manifest/'))
+print('Written:', out)
+"
+
+
+--------------------------------------------------------------
+  COEFFICIENT GENERATION (MODTRAN 6 — when S3 path available)
+--------------------------------------------------------------
+
+python -c "
+from prod.std.standard_method import run
+run(
+    data_dir='s3://BUCKET/PREFIX/',
+    srf_dir='data/SRF/',
+    srf_version='0-0-1',
+    modtran_version='6.0',
+)
+"
+
+
+--------------------------------------------------------------
+  INSPECT COEFFICIENT FILE
+--------------------------------------------------------------
+
+python -c "
+import xarray as xr
+ds = xr.open_dataset('coefficients/unfiltering_coefficients_v0.1.0_srf-0-0-1_modtran-3.7.nc')
+print(ds)
+print()
+print('SW shape:', ds['sw_coefficients'].shape)
+print('SSW shape:', ds['ssw_coefficients'].shape)
+print('LW shape:', ds['lw_coefficients'].shape)
+import numpy as np
+sw = ds['sw_coefficients'].values
+print(f'Filled bins: {np.isfinite(sw[:,:,:,:,:,0]).sum()} / {sw[:,:,:,:,:,0].size}')
+ds.close()
+"
+
+
+--------------------------------------------------------------
+  INSPECT L1B FILE
+--------------------------------------------------------------
+
+python -c "
+import xarray as xr
+ds = xr.open_dataset('data/example_data/LIBERA_L1B_RAD-4CH_V0-5-5_20280212T033945_20280212T052007_R26154153835.nc')
+print(ds)
+ds.close()
+"
+
+
+--------------------------------------------------------------
+  INSPECT FMATCH-CAM FILE
+--------------------------------------------------------------
+
+python -c "
+import xarray as xr
+ds = xr.open_dataset('data/example_data/LIBERA_ANC_FMATCH-CAM_V0-1-0_20280212T033945_20280212T033954_R26169165032.nc')
+print(ds)
+ds.close()
+"
+
+
+--------------------------------------------------------------
+  INSPECT MODTRAN 6 EXAMPLE FILE
+--------------------------------------------------------------
+
+python -c "
+import xarray as xr
+ds = xr.open_dataset('data/Modtran_6_data/FV3_Modtran6_IO_v5_write_v2_scene_1.nc')
+print(ds)
+ds.close()
+"
+
+
+--------------------------------------------------------------
+  TESTS
+--------------------------------------------------------------
+
+# All unit tests
+.venv/bin/python -m pytest tests/unit/ -v
+
+# All integration tests (slow — reads real data files)
+.venv/bin/python -m pytest -m integration tests/integration/ -v
+
+# Full pipeline integration test only (coefficient generation + algorithm)
+.venv/bin/python -m pytest -m integration tests/integration/test_full_pipeline.py -v
+
+# Specific test files
+.venv/bin/python -m pytest tests/unit/test_modtran6.py -v
+.venv/bin/python -m pytest tests/unit/test_tp7.py -v
+.venv/bin/python -m pytest tests/unit/test_standard_method.py -v
+.venv/bin/python -m pytest tests/integration/test_tape7_integration.py -v
+.venv/bin/python -m pytest tests/integration/test_load_dataset.py -v
+
+
+--------------------------------------------------------------
+  QUICK MODTRAN 6 PARSER CHECK
+--------------------------------------------------------------
+
+python -c "
+from tp7.modtran6 import load_nc_dataset
+df = load_nc_dataset('data/Modtran_6_data/')
+print(df.shape)
+print(df.columns.tolist())
+print(df.head())
+"
+
+
+--------------------------------------------------------------
+  QUICK TAPE7 PARSER CHECK (MODTRAN 3.7)
+--------------------------------------------------------------
+
+python -c "
+import glob
+from tp7.tp7 import Tape7
+files = sorted(glob.glob('data/Modtran_3-7_data/**/oceclr_*.tp7', recursive=True))
+t = Tape7(files[0])
+print(t.describer_df.head())
+print(t.describer_df.describe())
+"
+
+
+--------------------------------------------------------------
+  NOTES
+--------------------------------------------------------------
+- Two-file manifest (L1B + FMATCH-CAM):
+    data/manifest/LIBERA_INPUT_MANIFEST_01KVRA2GC8R3NGRTE5J8X2P8PE.json
+- Coefficient files live in coefficients/ and are named:
+    unfiltering_coefficients_v{semver}_srf-{srf_ver}_modtran-{m_ver}.nc
+- All prod commands use .venv (Poetry), NOT conda mr_env
+- conda mr_env is only for research/notebooks/
+- PROCESSING_PATH env var must be set before running algorithm.py
+- COEFFICIENTS_FILE env var overrides the default coefficient file lookup:
+    export COEFFICIENTS_FILE=/path/to/custom_coef.nc
