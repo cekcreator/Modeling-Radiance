@@ -448,6 +448,7 @@ def run(
         output_path = _build_output_filename(srf_version, modtran_version)
 
     logger.info("Step 1: Loading dataset")
+    # TODO: dispatch to load_nc_dataset() when modtran_version starts with "6";
     dataset = load_dataset(data_dir, srf_dir=srf_dir)
 
     logger.info("Step 2: Generating coefficients")
