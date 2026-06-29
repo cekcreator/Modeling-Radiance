@@ -31,11 +31,12 @@ There are two distinct areas of the repo with different purposes:
 Experimental notebooks and supporting utilities. The primary notebook for the full end-to-end pipeline is `research/notebooks/nb_pt1.ipynb`. Other notebooks (`modeling.ipynb`, `create_dataset.ipynb`, etc.) are earlier-stage experiments. `research/matt_code/` contains alternate parsers and SRF helpers used by notebooks.
 
 ### Production (`prod/` and `unfiltered_radiances/`)
-- `prod/std/standard_method.py` — generates quadratic regression coefficients per SZA/VZA/RAZ/scene bin. This is the active implementation of the traditional unfiltering method.
-- `unfiltered_radiances/algorithm.py` — Libera SDC processing template (reads a manifest, calls science logic, writes a NetCDF product via `libera_utils`). The `calculate_science_data()` function is currently a placeholder and is where the regression unfiltering algorithm will be wired in.
-- `unfiltered_radiances/l2-unfiltered-radiance-product-definition.yml` — defines the output NetCDF schema (variables, units, dimensions). Variable names here must match keys returned by `calculate_science_data()`.
+- `prod/std/standard_method.py` — generates quadratic regression coefficients per scene/cloud/SZA/VZA/RAZ bin and serializes them to a NetCDF cube. This is the active implementation of the traditional unfiltering method.
+- `unfiltered_radiances/unfiltering.py` — core science logic. `apply_unfiltering()` takes filtered radiances + angles + the coefficient dataset and returns four unfiltered channels (SW, SSW, LW, TOT). `HARDCODED_SCENE` and `HARDCODED_CLOUD` are temporary constants at the top — they will eventually be replaced by per-sample lookup from the FMATCH-CAM ancillary file. Bin edges: SZA `[0, 22.2, 41.4, 60.0, 75.5, 85.0]`, VZA `[0, 15, 30, 45, 60, 90]`, RAZ `[0, 15, 60, 120, 165, 180]`.
+- `unfiltered_radiances/algorithm.py` — Libera SDC processing entrypoint (reads a manifest, calls `calculate_science_data()`, writes a NetCDF product via `libera_utils`). Fully implemented — reads filtered radiances and angles from the L1B file, calls `apply_unfiltering()`, and returns all output variables including SZA/VZA/RAZ passthrough.
+- `unfiltered_radiances/l2-unfiltered-radiance-product-definition.yml` — defines the output NetCDF schema (variables, units, dimensions). Variable names here must match keys returned by `calculate_science_data()`. `ProductID: UNF-RAD-CAM`.
 
-The production algorithm runs as a Docker container: `ENTRYPOINT ["python", "algorithm.py"]` with a manifest path as the CLI argument.
+The production algorithm runs as a Docker container. The Dockerfile is at the repo root. When building, `PYTHONPATH=/app` must be set so the local packages (`tp7`, `srfs`, `prod`, `unfiltered_radiances`) are importable without an editable install, and the ENTRYPOINT must point to `unfiltered_radiances/algorithm.py` (not a flat-copied `algorithm.py`). Required runtime env vars: `PROCESSING_PATH` (output directory); optional: `COEFFICIENTS_FILE` (override default coefficient file lookup).
 
 ### Core Library Packages
 
@@ -53,6 +54,17 @@ Loads an SRF CSV from `data/SRF/` and builds a range-keyed DataFrame. `Tape7` by
 
 SRF CSVs live at `data/SRF/libera_srf_{channel}_v0-0-1.csv` where channel is `sw`, `ssw`, `lw`, or `total`.
 
+**`tp7/modtran6.py` — `load_nc_dataset(data_dir)`**
+Parses MODTRAN 6 NetCDF files and returns a `describer_df`-compatible DataFrame with the same columns as `Tape7.describer_df`. Called by `standard_method.py::run()` when `modtran_version` starts with `"6"`. MODTRAN 6 example files are under `data/Modtran_6_data/`. Note: the real M6 production data lives on S3 in the AWS SAE — local files are small synthetic examples for pipeline testing only.
+
+## Dev Environment Gotchas
+
+**Poetry is not on Claude Code's PATH.** It's only sourced in the user's interactive shell (`.zshrc`). The `.venv` at the repo root is fully populated by Poetry. Always use `.venv/bin/python -m pytest` instead of `pytest`, and never call `poetry` from bash tools — it will fail with "command not found". To add a dependency, run `poetry add <pkg>` in your own terminal.
+
+**Two separate environments — never mix them:**
+- `research/notebooks/` → conda `mr_env`
+- `prod/`, `unfiltered_radiances/`, `tp7/`, `srfs/` → Poetry `.venv/`
+
 ## Key Gotchas
 
 **Header parsing is fragile.** Two `.tp7` file formats exist — 12-column and 14-column. `_parse_metadata()` detects which by checking the second-to-last line. Column index mappings differ: `[1,6,10,5,4]` for 12-col, `[0,7,13,5,9]` for 14-col. Do not change these without inspecting actual `.tp7` files first.
@@ -67,7 +79,7 @@ SRF CSVs live at `data/SRF/libera_srf_{channel}_v0-0-1.csv` where channel is `sw
 
 ## Coefficient Output
 
-Generated coefficient files live in `coefficients/` at the repo root (tracked by git). Files are named `unfiltering_coefficients_srf-{srf_version}_{timestamp}.nc` so each file is traceable to the SRF version that produced it. Regeneration is triggered whenever the SRFs change. Run via:
+Generated coefficient files live in `coefficients/` at the repo root (tracked by git). Files are named `unfiltering_coefficients_v{semver}_srf-{srf_version}_modtran-{modtran_version}.nc` — e.g. `unfiltering_coefficients_v0.1.0_srf-0-0-1_modtran-3.7.nc`. Regeneration is triggered whenever the SRFs change. Run via:
 
 ```python
 from prod.std.standard_method import run
@@ -76,8 +88,12 @@ run(data_dir="data/Modtran_3-7_data/", srf_dir="data/SRF/", srf_version="0-0-1",
 
 ## Standard Method (Regression Coefficients)
 
-`prod/std/standard_method.py::generate_multivariate_coefficients(dataset)` takes a combined `describer_df` DataFrame (all scenes merged) and returns a dict keyed by `(sza_bin, vza_bin, raz_bin)` tuples. Each value is a tuple `(sw_coef, ssw_coef, lw_coef)`:
-- `sw_coef` / `lw_coef` — degree-2 polynomial coefficients from `np.polynomial.polynomial.Polynomial.fit`
-- `ssw_coef` — multivariate regression coefficients using both SSW and SW filtered radiances as inputs (`sklearn.linear_model.LinearRegression` on `PolynomialFeatures(degree=2)` expansion)
+`prod/std/standard_method.py::run()` is the top-level entrypoint. It loads all MODTRAN data (dispatching to `Tape7` for MODTRAN 3.7 or `load_nc_dataset()` for MODTRAN 6), merges scenes, fits coefficients, and writes the output NetCDF.
 
-Bins that have no data (sparse angular combinations) are silently skipped with a print statement.
+`serialize_coefficients()` writes an xarray Dataset with a 5D coefficient cube shaped `(scene, cloud, sza_bin, vza_bin, raz_bin)`:
+- `sw_coefficients` / `ssw_coefficients` — 7 params each (multivariate quadratic over SW + SSW filtered radiances, via `PolynomialFeatures(degree=2)`)
+- `lw_coefficients` / `tot_coefficients` — 3 params each (univariate degree-2 polynomial)
+
+Scene dimension: `["Land", "Cloudy Ocean", "Clear Ocean", "Snow", "Deep Convective Cloud"]`. Cloud dimension: `[0, 1]` (clear/cloudy). Bins that have no data are stored as NaN and skipped silently at inference time in `unfiltering.py`.
+
+The `SCENE_TYPES` and `CLOUD_VALUES` lists defined in this file are the authoritative source — both `algorithm.py` and `unfiltering.py` import them directly.
