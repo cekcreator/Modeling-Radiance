@@ -28,6 +28,9 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).parent.parent
+_DEFAULT_COEF_DIR = _REPO_ROOT / "coefficients"
+
 # Third-party imports
 import numpy as np
 import xarray as xr
@@ -185,8 +188,9 @@ def read_all_input_data(input_manifest: Manifest) -> dict[str, xr.Dataset]:
 
         try:
             with smart_open(file_info.filename) as file_handle:
-                # Load the NetCDF dataset
+                # Load the NetCDF dataset and force into memory before file handle closes
                 dataset = xr.open_dataset(file_handle)
+                dataset.load()
                 all_data[file_info.filename] = dataset
                 logger.info(f"Successfully loaded dataset with variables: {list(dataset.variables)}")
 
@@ -198,74 +202,81 @@ def read_all_input_data(input_manifest: Manifest) -> dict[str, xr.Dataset]:
     return all_data
 
 
+def _get_l1b_dataset(all_input_data: dict[str, xr.Dataset]) -> xr.Dataset:
+    for ds in all_input_data.values():
+        if ds.attrs.get("ProductID") == "RAD-4CH":
+            return ds
+    return next(iter(all_input_data.values()))
+
+
+def _find_coefficient_file() -> Path:
+    env_path = os.getenv("COEFFICIENTS_FILE")
+    if env_path:
+        return Path(env_path)
+    coef_files = sorted(_DEFAULT_COEF_DIR.glob("unfiltering_coefficients_*.nc"))
+    if not coef_files:
+        raise FileNotFoundError(f"No coefficient file found in {_DEFAULT_COEF_DIR}")
+    return coef_files[-1]
+
+
 def calculate_science_data(all_input_data: dict[str, xr.Dataset]) -> dict:
     """
-    Step 3: Calculate your specific science data variables.
+    Step 3: Apply unfiltering regression to produce unfiltered radiances.
 
-    *** THIS IS WHERE YOUR SCIENCE ALGORITHM GOES ***
-
-    This function validates that all input files can be opened and creates
-    constant arrays for output variables with a fixed size of 123 samples.
-
-    Parameters
-    ----------
-    all_input_data : dict[str, xr.Dataset]
-        Dictionary of all loaded input datasets keyed by filename
-
-    Returns
-    -------
-    dict
-        Dictionary containing processed science variables with sequential constants
-        Keys should match the variable names in your product definition YAML
-
-    Notes
-    -----
-    This function:
-    - Validates that all input files were successfully opened
-    - Creates constant arrays of size 123 for all output variables
-    - Uses sequential values across all variables (Option B)
+    Reads filtered radiances and angles from the L1B file, looks up regression
+    coefficients per (scene, cloud, SZA, VZA, RAZ) bin, and applies the polynomial
+    model to produce four unfiltered radiance channels.
     """
-    logger.info("Step 3: Calculating science data variables")
+    from unfiltered_radiances.unfiltering import (
+        HARDCODED_CLOUD,
+        HARDCODED_SCENE,
+        apply_unfiltering,
+        load_coefficients,
+    )
+    from prod.std.standard_method import SCENE_TYPES
 
-    # Validate all input files were opened successfully
-    logger.info(f"Validating {len(all_input_data)} input datasets")
-    for filename, dataset in all_input_data.items():
-        if dataset is None:
-            raise ValueError(f"Failed to load dataset from {filename}")
-        logger.debug(f"Dataset from {filename} has variables: {list(dataset.variables)}")
+    logger.info("Step 3: Applying unfiltering regression")
+    l1b_ds = _get_l1b_dataset(all_input_data)
 
-    # Define output size
-    output_size = 123
-    logger.info(f"Creating output arrays of size {output_size}")
+    sw_f  = l1b_ds["Filtered_Radiance_SW"].values
+    ssw_f = l1b_ds["Filtered_Radiance_SSW"].values
+    lw_f  = l1b_ds["Filtered_Radiance_LW"].values
+    tot_f = l1b_ds["Filtered_Radiance_Tot"].values
+    sza   = l1b_ds["Solar_Zenith_Surface"].values
+    vza   = l1b_ds["Viewing_Zenith_Surface"].values
+    raz   = l1b_ds["Relative_Azimuth_Surface"].values
+    lat   = l1b_ds["Latitude"].values
+    lon   = l1b_ds["Longitude"].values
+    qf    = l1b_ds["Quality_Flag"].values
+    times = l1b_ds["radiometer_time"].values
 
-    # Create time stamps (current time repeated)
-    time_data = np.full((output_size,), datetime(2028, 1, 1))
+    logger.info(f"L1B loaded: {len(times)} samples, scene={HARDCODED_SCENE}, cloud={HARDCODED_CLOUD}")
 
-    # Create sequential constant arrays for each variable
-    calibrated_radiance = np.full_like(time_data, 123)
+    coef_path = _find_coefficient_file()
+    logger.info(f"Using coefficient file: {coef_path.name}")
+    coef_ds = load_coefficients(coef_path)
+    try:
+        sw_u, ssw_u, lw_u, tot_u = apply_unfiltering(
+            sw_f, ssw_f, lw_f, tot_f, sza, vza, raz, coef_ds,
+            scene_idx=SCENE_TYPES.index(HARDCODED_SCENE),
+            cloud=HARDCODED_CLOUD,
+        )
+    finally:
+        coef_ds.close()
 
-    radiance_uncertainty = np.full_like(time_data, 0.01)
+    filled = int(np.isfinite(sw_u).sum())
+    logger.info(f"Unfiltering complete: {filled}/{len(sw_u)} samples filled, {np.isnan(sw_u).sum()} NaN")
 
-    latitude = np.full_like(time_data, 45.0)  # Example constant latitude
-
-    longitude = np.full_like(time_data, -75.0)  # Example constant longitude
-
-    quality_flags = np.full_like(time_data, 0)  # Example constant quality flags
-
-    # Package results
-    processed_data = {
-        'radiometer_time': time_data,
-        'unfiltered_radiance': calibrated_radiance.astype(np.float64),
-        'latitude': latitude.astype(np.float64),
-        'longitude': longitude.astype(np.float64),
-        'quality_flags': quality_flags.astype(np.int32)
+    return {
+        "radiometer_time":                     times,
+        "shortwave_unfiltered_radiance":       sw_u,
+        "split_shortwave_unfiltered_radiance": ssw_u,
+        "longwave_unfiltered_radiance":        lw_u,
+        "total_unfiltered_radiance":           tot_u,
+        "latitude":                            lat,
+        "longitude":                           lon,
+        "quality_flags":                       qf.astype(np.int32),
     }
-
-    logger.info("Science calculations completed")
-    logger.info(f"Created variables: {list(processed_data.keys())}")
-    logger.info(f"Each variable has {output_size} samples")
-
-    return processed_data
 
 
 def create_and_write_data_product(

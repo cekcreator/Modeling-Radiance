@@ -5,9 +5,11 @@
 *.pyo
 __pycache__/
 data/
+coefficients/*.nc
+unfiltering.egg-info/
+*.log
+.pytest_cache/
 .idea/
 .idea
 poetry.lock
-CLAUDE.md
-notes/
 env_activate.sh
