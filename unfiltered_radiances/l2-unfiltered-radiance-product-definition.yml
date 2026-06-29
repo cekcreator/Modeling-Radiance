@@ -8,7 +8,7 @@
 # https://libera-utils.readthedocs.io/en/latest/
 
 attributes:
-  ProductID: UNF-RAD
+  ProductID: UNF-RAD-CAM
   algorithm_version: 0.1.0
   lw_regression_method: "Univariate regression"
   sw_regression_method: "Univariate regression"
