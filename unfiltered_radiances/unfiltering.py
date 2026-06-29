@@ -1,4 +1,4 @@
-"""Core unfiltering science logic — bin lookup and polynomial regression application."""
+"""Core unfiltering science logic — scene/cloud classification, bin lookup, and polynomial regression."""
 from itertools import product as iproduct
 from pathlib import Path
 
@@ -9,17 +9,64 @@ from sklearn.preprocessing import PolynomialFeatures
 
 from prod.std.standard_method import CLOUD_VALUES, SCENE_TYPES
 
-# TODO: replace with per-sample lookup from scene/cloud input file when it exists
-HARDCODED_SCENE = "Clear Ocean"
-HARDCODED_CLOUD = 0
-
 _SZA_EDGES = [0.0, 22.2, 41.4, 60.0, 75.5, 85.0]
 _VZA_EDGES = [0.0, 15.0, 30.0, 45.0, 60.0, 90.0]
 _RAZ_EDGES = [0.0, 15.0, 60.0, 120.0, 165.0, 180.0]
 
+_CLOUD_FRACTION_THRESHOLD = 0.10
+_DCC_OT_THRESHOLD = 10.0
+_IGBP_OCEAN = 17
+_IGBP_SNOW = 15
+
+_IDX_LAND    = SCENE_TYPES.index("Land")
+_IDX_CLO_OCE = SCENE_TYPES.index("Cloudy Ocean")
+_IDX_CLR_OCE = SCENE_TYPES.index("Clear Ocean")
+_IDX_SNOW    = SCENE_TYPES.index("Snow")
+_IDX_DCC     = SCENE_TYPES.index("Deep Convective Cloud")
+
 
 def load_coefficients(coef_path: Path | str) -> xr.Dataset:
     return xr.open_dataset(coef_path)
+
+
+def classify_scene_cloud(cam_ds: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Derive per-sample scene index and binary cloud flag from a FMATCH-CAM dataset.
+
+    Returns
+    -------
+    scene_idx : np.ndarray[int], shape (n,)
+        Index into SCENE_TYPES for each sample.
+    cloud : np.ndarray[int], shape (n,)
+        0 = no cloud, 1 = cloud present (cloud_fraction > 0.10).
+    """
+    igbp      = cam_ds["igbp_surface_type"].values.astype(int)
+    cf        = cam_ds["viirs_cloud_cloud_fraction"].values
+    cot       = cam_ds["viirs_cloud_cloud_optical_thickness"].values
+    perm_ice  = cam_ds["nise_permanent_ice"].values
+    dry_snow  = cam_ds["nise_dry_snow_on_land"].values
+
+    n = len(igbp)
+    scene_idx = np.full(n, _IDX_LAND, dtype=int)
+    cloud     = (cf > _CLOUD_FRACTION_THRESHOLD).astype(int)
+
+    # Priority 1: DCC
+    dcc = (cf >= _CLOUD_FRACTION_THRESHOLD) & (cot > _DCC_OT_THRESHOLD)
+    scene_idx[dcc] = _IDX_DCC
+    cloud[dcc] = 1
+
+    # Priority 2: Snow (not already DCC)
+    snow = ~dcc & ((igbp == _IGBP_SNOW) | (perm_ice > 0.5) | (dry_snow > 0.5))
+    scene_idx[snow] = _IDX_SNOW
+
+    # Priority 3: Ocean (not DCC or Snow)
+    ocean = ~dcc & ~snow & (igbp == _IGBP_OCEAN)
+    scene_idx[ocean & (cf > _CLOUD_FRACTION_THRESHOLD)] = _IDX_CLO_OCE
+    scene_idx[ocean & (cf <= _CLOUD_FRACTION_THRESHOLD)] = _IDX_CLR_OCE
+
+    # Priority 4: Land — already the default in scene_idx
+
+    return scene_idx, cloud
 
 
 def _fold_raz(raz: np.ndarray) -> np.ndarray:
@@ -48,11 +95,18 @@ def apply_unfiltering(
     vza: np.ndarray,
     raz: np.ndarray,
     coef_ds: xr.Dataset,
-    scene_idx: int,
-    cloud: int,
+    scene_idx: np.ndarray,
+    cloud: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Apply regression coefficients to produce unfiltered radiances.
+
+    Parameters
+    ----------
+    scene_idx : np.ndarray[int], shape (n,)
+        Per-sample index into SCENE_TYPES.
+    cloud : np.ndarray[int], shape (n,)
+        Per-sample binary cloud flag (0 or 1).
 
     Returns
     -------
@@ -60,7 +114,6 @@ def apply_unfiltering(
     """
     raz = _fold_raz(raz)
     sza_idx, vza_idx, raz_idx = _assign_bin_indices(sza, vza, raz)
-    cloud_idx = CLOUD_VALUES.index(cloud)
 
     n = len(sw_f)
     sw_u  = np.full(n, np.nan, dtype=float)
@@ -70,29 +123,34 @@ def apply_unfiltering(
 
     poly = PolynomialFeatures(degree=2, include_bias=True)
 
-    sw_coefs  = coef_ds["sw_coefficients"].values[scene_idx, cloud_idx]   # (5,5,5,7)
-    ssw_coefs = coef_ds["ssw_coefficients"].values[scene_idx, cloud_idx]
-    lw_coefs  = coef_ds["lw_coefficients"].values[scene_idx, cloud_idx]   # (5,5,5,3)
-    tot_coefs = coef_ds["tot_coefficients"].values[scene_idx, cloud_idx]
+    sw_coefs  = coef_ds["sw_coefficients"].values   # (5, 2, 5, 5, 5, 7)
+    ssw_coefs = coef_ds["ssw_coefficients"].values
+    lw_coefs  = coef_ds["lw_coefficients"].values   # (5, 2, 5, 5, 5, 3)
+    tot_coefs = coef_ds["tot_coefficients"].values
 
-    for si, vi, ri in iproduct(range(5), range(5), range(5)):
-        mask = (sza_idx == si) & (vza_idx == vi) & (raz_idx == ri)
+    for sci, cli, si, vi, ri in iproduct(range(5), range(2), range(5), range(5), range(5)):
+        mask = (
+            (scene_idx == sci) & (cloud == cli) &
+            (sza_idx == si) & (vza_idx == vi) & (raz_idx == ri)
+        )
         if not mask.any():
             continue
 
-        sw_coef  = sw_coefs[si, vi, ri]
-        ssw_coef = ssw_coefs[si, vi, ri]
-        lw_coef  = lw_coefs[si, vi, ri]
-        tot_coef = tot_coefs[si, vi, ri]
+        sw_coef  = sw_coefs[sci, cli, si, vi, ri]
+        ssw_coef = ssw_coefs[sci, cli, si, vi, ri]
+        lw_coef  = lw_coefs[sci, cli, si, vi, ri]
+        tot_coef = tot_coefs[sci, cli, si, vi, ri]
 
         if np.any(np.isnan(sw_coef)):
             continue  # sparse bin — leave NaN
 
+        # SW and SSW: multivariate quadratic on [ssw_f, sw_f] — 7 coefficients each
         X_poly = poly.fit_transform(np.vstack([ssw_f[mask], sw_f[mask]]).T)
         sw_u[mask]  = sw_coef[0]  + X_poly @ sw_coef[1:]
         ssw_u[mask] = ssw_coef[0] + X_poly @ ssw_coef[1:]
 
-        lw_u[mask]  = lw_coef[0]  + lw_coef[1] * lw_f[mask]  + lw_coef[2] * lw_f[mask]**2
+        # LW and TOT: univariate quadratic — 3 coefficients each
+        lw_u[mask]  = lw_coef[0]  + lw_coef[1]  * lw_f[mask]  + lw_coef[2]  * lw_f[mask]**2
         tot_u[mask] = tot_coef[0] + tot_coef[1] * tot_f[mask] + tot_coef[2] * tot_f[mask]**2
 
     return sw_u, ssw_u, lw_u, tot_u

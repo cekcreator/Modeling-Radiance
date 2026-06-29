@@ -77,6 +77,30 @@ variables:
     missing_value: -999.0
     dtype: float64
 
+  solar_zenith_angle:
+    long_name: "Solar zenith angle at surface"
+    dimensions: ["RADIOMETER_TIME"]
+    units: "degrees"
+    valid_range: [0, 90]
+    missing_value: -999.0
+    dtype: float64
+
+  viewing_zenith_angle:
+    long_name: "Viewing (sensor) zenith angle at surface"
+    dimensions: ["RADIOMETER_TIME"]
+    units: "degrees"
+    valid_range: [0, 90]
+    missing_value: -999.0
+    dtype: float64
+
+  relative_azimuth_angle:
+    long_name: "Relative azimuth angle at surface"
+    dimensions: ["RADIOMETER_TIME"]
+    units: "degrees"
+    valid_range: [0, 180]
+    missing_value: -999.0
+    dtype: float64
+
   quality_flags:
     long_name: "Data quality flags"
     dimensions: ["RADIOMETER_TIME"]
