@@ -45,6 +45,7 @@ def classify_scene_cloud(cam_ds: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
     cot       = cam_ds["viirs_cloud_cloud_optical_thickness"].values
     perm_ice  = cam_ds["nise_permanent_ice"].values
     dry_snow  = cam_ds["nise_dry_snow_on_land"].values
+    sea_ice   = cam_ds["nise_sea_ice_concentration"].values
 
     n = len(igbp)
     scene_idx = np.full(n, _IDX_LAND, dtype=int)
@@ -56,7 +57,15 @@ def classify_scene_cloud(cam_ds: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
     cloud[dcc] = 1
 
     # Priority 2: Snow (not already DCC)
-    snow = ~dcc & ((igbp == _IGBP_SNOW) | (perm_ice > 0.5) | (dry_snow > 0.5))
+    # Includes IGBP 15, NISE permanent ice/dry snow, NISE sea ice, and tundra (IGBP 18-20).
+    # Tundra and sea ice classifications are provisional — confirm with science team.
+    snow = ~dcc & (
+        (igbp == _IGBP_SNOW) |
+        (perm_ice > 0.5) |
+        (dry_snow > 0.5) |
+        (sea_ice > 0.5) |
+        ((igbp >= 18) & (igbp <= 20))
+    )
     scene_idx[snow] = _IDX_SNOW
 
     # Priority 3: Ocean (not DCC or Snow)

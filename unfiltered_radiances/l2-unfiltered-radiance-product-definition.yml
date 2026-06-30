@@ -8,7 +8,7 @@
 # https://libera-utils.readthedocs.io/en/latest/
 
 attributes:
-  ProductID: UNF-RAD-CAM
+  ProductID: UNF-RAD  # TODO: change to UNF-RAD-CAM once libera_utils registers that ProductID
   algorithm_version: 0.1.0
   lw_regression_method: "Univariate regression"
   sw_regression_method: "Univariate regression"
