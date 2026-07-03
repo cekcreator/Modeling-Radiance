@@ -64,7 +64,7 @@ ds.close()
 docker build -t libera-l2-unfiltered-radiances .
 
 # Confirm entrypoint works
-docker run --rm libera-l2-unfiltered-radiances --help
+docker run --rm libera-l2-unfiltered-radiances
 
 # Full test run (mount local manifest and output dir)
 export PROCESSING_PATH=/tmp/libera_test_output
