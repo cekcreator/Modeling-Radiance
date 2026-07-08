@@ -380,23 +380,33 @@ def serialize_coefficients(
             ),
         },
         coords={
-            "scene":          ("scene", SCENE_TYPES, {"long_name": "Scene type"}),
+            "scene": ("scene", SCENE_TYPES, {
+                "long_name": "Scene type",
+                "description": (
+                    "0 = Land: non-ocean, non-snow/ice surface (all IGBP types except 15 and 17); "
+                    "1 = Cloudy Ocean: IGBP 17 (Water Bodies) with cloud_fraction > 0.10; "
+                    "2 = Clear Ocean: IGBP 17 (Water Bodies) with cloud_fraction <= 0.10; "
+                    "3 = Snow/Ice: IGBP 15 (Snow and Ice) or NISE permanent ice or dry snow; "
+                    "4 = Deep Convective Cloud: cloud_fraction >= 0.10 and cloud_optical_thickness > 10.0 (any surface)."
+                ),
+            }),
             "cloud":          ("cloud", CLOUD_VALUES, {"long_name": "Cloud binary flag (0=no cloud, 1=any cloud)"}),
             "sza_bin":        ("sza_bin", range(n_sza), {"long_name": "Solar Zenith Angle bin index (0–4); see sza_lo/sza_hi for degree ranges"}),
             "vza_bin":        ("vza_bin", range(n_vza), {"long_name": "Viewing Zenith Angle bin index (0–4); see vza_lo/vza_hi for degree ranges"}),
             "raz_bin":        ("raz_bin", range(n_raz), {"long_name": "Relative Azimuth Angle bin index (0–4); see raz_lo/raz_hi for degree ranges"}),
             "multi_coef_idx": ("multi_coef_idx", range(7), {"long_name": "Multivariate coefficient index: 0=intercept, 1=const, 2=ssw_f, 3=sw_f, 4=ssw_f^2, 5=ssw_f*sw_f, 6=sw_f^2"}),
             "coef_idx":       ("coef_idx", range(3), {"long_name": "Univariate polynomial coefficient index: 0=a0 (offset), 1=a1 (linear), 2=a2 (quadratic)"}),
-            "sza_lo": ("sza_bin", [b[0] for b in SZA_BINS], {"long_name": "SZA bin lower bound (degrees)"}),
-            "sza_hi": ("sza_bin", [b[1] for b in SZA_BINS], {"long_name": "SZA bin upper bound (degrees)"}),
-            "vza_lo": ("vza_bin", [b[0] for b in VZA_BINS], {"long_name": "VZA bin lower bound (degrees)"}),
-            "vza_hi": ("vza_bin", [b[1] for b in VZA_BINS], {"long_name": "VZA bin upper bound (degrees)"}),
-            "raz_lo": ("raz_bin", [b[0] for b in RAZ_BINS], {"long_name": "RAZ bin lower bound (degrees)"}),
-            "raz_hi": ("raz_bin", [b[1] for b in RAZ_BINS], {"long_name": "RAZ bin upper bound (degrees)"}),
+            "sza_lo": ("sza_bin", [b[0] for b in SZA_BINS], {"long_name": "SZA bin lower bound, inclusive (degrees)"}),
+            "sza_hi": ("sza_bin", [b[1] for b in SZA_BINS], {"long_name": "SZA bin upper bound, inclusive (degrees)"}),
+            "vza_lo": ("vza_bin", [b[0] for b in VZA_BINS], {"long_name": "VZA bin lower bound, inclusive (degrees)"}),
+            "vza_hi": ("vza_bin", [b[1] for b in VZA_BINS], {"long_name": "VZA bin upper bound, inclusive (degrees)"}),
+            "raz_lo": ("raz_bin", [b[0] for b in RAZ_BINS], {"long_name": "RAZ bin lower bound, inclusive (degrees)"}),
+            "raz_hi": ("raz_bin", [b[1] for b in RAZ_BINS], {"long_name": "RAZ bin upper bound, inclusive (degrees)"}),
         },
         attrs={
             "title": "Libera unfiltering regression coefficients",
             "method": "Scene/cloud-stratified quadratic regression (Loeb et al. 2001)",
+            "bin_convention": "All angle bins are inclusive on both lower and upper bounds.",
             "coefficient_version": _code_version(),
             "srf_version": srf_version,
             "modtran_version": modtran_version,
@@ -448,6 +458,7 @@ def run(
         output_path = _build_output_filename(srf_version, modtran_version)
 
     logger.info("Step 1: Loading dataset")
+    # TODO: dispatch to load_nc_dataset() when modtran_version starts with "6";
     dataset = load_dataset(data_dir, srf_dir=srf_dir)
 
     logger.info("Step 2: Generating coefficients")
